@@ -33,6 +33,23 @@ int Calendar_DayOfWeek(int year, int month, int day)
         + monthOffsets[month - 1] + day) % 7;
 }
 
+void Calendar_AssignMonthDays(int year, int month,
+    int cellDays[CALENDAR_GRID_CELL_COUNT])
+{
+    int firstWeekday = Calendar_DayOfWeek(year, month, 1);
+    int daysInMonth = Calendar_DaysInMonth(year, month);
+    int cellIndex;
+    int day;
+
+    for (cellIndex = 0; cellIndex < CALENDAR_GRID_CELL_COUNT; ++cellIndex) {
+        cellDays[cellIndex] = 0;
+    }
+
+    for (day = 1; day <= daysInMonth; ++day) {
+        cellDays[firstWeekday + day - 1] = day;
+    }
+}
+
 void Calendar_PreviousMonth(int *year, int *month)
 {
     (*month)--;

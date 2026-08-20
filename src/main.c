@@ -1,13 +1,11 @@
 #include <windows.h>
 #include <windowsx.h>
-#include <stdio.h>
 
 #include "calendar.h"
 
 #define WINDOW_CLASS_NAME L"ScheduleByCWindow"
 #define CALENDAR_COLUMNS 7
 #define CALENDAR_ROWS 6
-#define MAX_CALENDAR_CELLS (CALENDAR_COLUMNS * CALENDAR_ROWS)
 
 typedef struct {
     int year;
@@ -16,8 +14,9 @@ typedef struct {
 } CalendarDate;
 
 typedef struct {
-    int day;
     RECT rect;
+    int hasDay;
+    int day;
 } CalendarCell;
 
 typedef struct {
@@ -25,8 +24,7 @@ typedef struct {
     int displayedMonth;
     CalendarDate today;
     CalendarDate selectedDate;
-    CalendarCell cells[MAX_CALENDAR_CELLS];
-    int cellCount;
+    CalendarCell cells[CALENDAR_GRID_CELL_COUNT];
     RECT previousMonthRect;
     RECT nextMonthRect;
 } AppState;
@@ -58,6 +56,98 @@ static void MoveDisplayedMonth(int direction)
         Calendar_DaysInMonth(g_app.displayedYear, g_app.displayedMonth));
 }
 
+static void LayoutCalendarCells(int gridLeft, int gridRight, int gridTop,
+    int gridBottom, int columnWidth, int rowHeight)
+{
+    int cellIndex;
+
+    for (cellIndex = 0; cellIndex < CALENDAR_GRID_CELL_COUNT; ++cellIndex) {
+        int row = cellIndex / CALENDAR_COLUMNS;
+        int column = cellIndex % CALENDAR_COLUMNS;
+        CalendarCell *cell = &g_app.cells[cellIndex];
+
+        cell->rect.left = gridLeft + column * columnWidth;
+        cell->rect.right = (column == CALENDAR_COLUMNS - 1) ? gridRight
+            : gridLeft + (column + 1) * columnWidth;
+        cell->rect.top = gridTop + row * rowHeight;
+        cell->rect.bottom = (row == CALENDAR_ROWS - 1) ? gridBottom
+            : gridTop + (row + 1) * rowHeight;
+        cell->hasDay = FALSE;
+        cell->day = 0;
+    }
+}
+
+static void DrawCalendarGrid(HDC hdc, HBRUSH emptyCellBrush, HBRUSH gridBrush)
+{
+    int cellIndex;
+
+    for (cellIndex = 0; cellIndex < CALENDAR_GRID_CELL_COUNT; ++cellIndex) {
+        FillRect(hdc, &g_app.cells[cellIndex].rect, emptyCellBrush);
+        FrameRect(hdc, &g_app.cells[cellIndex].rect, gridBrush);
+    }
+}
+
+static void AssignDaysToCells(void)
+{
+    int cellDays[CALENDAR_GRID_CELL_COUNT];
+    int cellIndex;
+
+    Calendar_AssignMonthDays(g_app.displayedYear, g_app.displayedMonth, cellDays);
+    for (cellIndex = 0; cellIndex < CALENDAR_GRID_CELL_COUNT; ++cellIndex) {
+        g_app.cells[cellIndex].hasDay = cellDays[cellIndex] != 0;
+        g_app.cells[cellIndex].day = cellDays[cellIndex];
+    }
+}
+
+static void DrawCalendarDays(HDC hdc, HBRUSH emptyCellBrush,
+    HBRUSH selectedBrush, HBRUSH todayBrush, HBRUSH gridBrush, HPEN todayPen)
+{
+    int cellIndex;
+    WCHAR text[16];
+
+    for (cellIndex = 0; cellIndex < CALENDAR_GRID_CELL_COUNT; ++cellIndex) {
+        CalendarCell *cell = &g_app.cells[cellIndex];
+        RECT dayTextRect;
+        int column;
+        int isSelected;
+        int isToday;
+
+        if (!cell->hasDay) {
+            continue;
+        }
+
+        column = cellIndex % CALENDAR_COLUMNS;
+        isSelected = IsSameDate(g_app.selectedDate, g_app.displayedYear,
+            g_app.displayedMonth, cell->day);
+        isToday = IsSameDate(g_app.today, g_app.displayedYear,
+            g_app.displayedMonth, cell->day);
+
+        /* Fill first, restore the border, then draw the number last. */
+        FillRect(hdc, &cell->rect, isSelected ? selectedBrush
+            : (isToday ? todayBrush : emptyCellBrush));
+        FrameRect(hdc, &cell->rect, gridBrush);
+
+        if (isToday) {
+            HPEN oldPen = (HPEN)SelectObject(hdc, todayPen);
+            MoveToEx(hdc, cell->rect.left + 2, cell->rect.top + 2, NULL);
+            LineTo(hdc, cell->rect.right - 3, cell->rect.top + 2);
+            LineTo(hdc, cell->rect.right - 3, cell->rect.bottom - 3);
+            LineTo(hdc, cell->rect.left + 2, cell->rect.bottom - 3);
+            LineTo(hdc, cell->rect.left + 2, cell->rect.top + 2);
+            SelectObject(hdc, oldPen);
+        }
+
+        dayTextRect = cell->rect;
+        dayTextRect.left += 7;
+        dayTextRect.top += 6;
+        wsprintfW(text, L"%d", cell->day);
+        SetTextColor(hdc, isSelected ? RGB(255, 255, 255)
+            : (column == 0 ? RGB(190, 50, 50)
+            : (column == 6 ? RGB(45, 95, 180) : RGB(35, 39, 47))));
+        DrawTextW(hdc, text, -1, &dayTextRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+    }
+}
+
 static void DrawCalendar(HDC hdc, const RECT *clientRect)
 {
     static const WCHAR *weekdays[CALENDAR_COLUMNS] = {
@@ -78,28 +168,25 @@ static void DrawCalendar(HDC hdc, const RECT *clientRect)
     int gridBottom;
     int columnWidth;
     int rowHeight;
-    int firstWeekday;
-    int daysInMonth;
     int weekday;
-    int day;
     WCHAR text[64];
     HFONT titleFont;
     HFONT oldFont;
-    HBRUSH whiteBrush = (HBRUSH)GetStockObject(WHITE_BRUSH);
+    HBRUSH emptyCellBrush = (HBRUSH)GetStockObject(WHITE_BRUSH);
+    HBRUSH gridBrush = CreateSolidBrush(RGB(185, 190, 198));
     HBRUSH footerBrush = CreateSolidBrush(RGB(245, 247, 250));
     HBRUSH selectedBrush = CreateSolidBrush(RGB(36, 100, 180));
     HBRUSH todayBrush = CreateSolidBrush(RGB(255, 242, 204));
-    HPEN gridPen = CreatePen(PS_SOLID, 1, RGB(185, 190, 198));
     HPEN todayPen = CreatePen(PS_SOLID, 2, RGB(220, 130, 30));
-    HPEN oldPen;
 
-    FillRect(hdc, clientRect, whiteBrush);
+    FillRect(hdc, clientRect, emptyCellBrush);
+    SetBkMode(hdc, TRANSPARENT);
 
     if (gridRight <= gridLeft) {
-        gridRight = gridLeft + 7;
+        gridRight = gridLeft + CALENDAR_COLUMNS;
     }
-    if (footerTop <= gridTop + CALENDAR_ROWS) {
-        footerTop = gridTop + CALENDAR_ROWS;
+    if (footerTop <= gridTop + CALENDAR_ROWS + 8) {
+        footerTop = gridTop + CALENDAR_ROWS + 8;
     }
     gridBottom = footerTop - 8;
     columnWidth = (gridRight - gridLeft) / CALENDAR_COLUMNS;
@@ -115,7 +202,6 @@ static void DrawCalendar(HDC hdc, const RECT *clientRect)
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Yu Gothic UI");
     oldFont = (HFONT)SelectObject(hdc, titleFont);
-    SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, RGB(35, 39, 47));
     wsprintfW(text, L"%d年 %d月", g_app.displayedYear, g_app.displayedMonth);
     {
@@ -151,66 +237,19 @@ static void DrawCalendar(HDC hdc, const RECT *clientRect)
             DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 
-    firstWeekday = Calendar_DayOfWeek(g_app.displayedYear, g_app.displayedMonth, 1);
-    daysInMonth = Calendar_DaysInMonth(g_app.displayedYear, g_app.displayedMonth);
-    g_app.cellCount = 0;
-    oldPen = (HPEN)SelectObject(hdc, gridPen);
+    LayoutCalendarCells(gridLeft, gridRight, gridTop, gridBottom,
+        columnWidth, rowHeight);
+    DrawCalendarGrid(hdc, emptyCellBrush, gridBrush);
+    AssignDaysToCells();
+    DrawCalendarDays(hdc, emptyCellBrush, selectedBrush, todayBrush,
+        gridBrush, todayPen);
 
-    for (day = 1; day <= daysInMonth; ++day) {
-        int index = firstWeekday + day - 1;
-        int row = index / CALENDAR_COLUMNS;
-        int column = index % CALENDAR_COLUMNS;
-        RECT cellRect;
-        RECT dayTextRect;
-        int isSelected;
-        int isToday;
-
-        cellRect.left = gridLeft + column * columnWidth;
-        cellRect.right = (column == CALENDAR_COLUMNS - 1) ? gridRight
-            : gridLeft + (column + 1) * columnWidth;
-        cellRect.top = gridTop + row * rowHeight;
-        cellRect.bottom = (row == CALENDAR_ROWS - 1) ? gridBottom
-            : gridTop + (row + 1) * rowHeight;
-
-        isSelected = IsSameDate(g_app.selectedDate, g_app.displayedYear,
-            g_app.displayedMonth, day);
-        isToday = IsSameDate(g_app.today, g_app.displayedYear,
-            g_app.displayedMonth, day);
-        FillRect(hdc, &cellRect, isSelected ? selectedBrush
-            : (isToday ? todayBrush : whiteBrush));
-        Rectangle(hdc, cellRect.left, cellRect.top, cellRect.right, cellRect.bottom);
-
-        if (isToday) {
-            SelectObject(hdc, todayPen);
-            MoveToEx(hdc, cellRect.left + 1, cellRect.top + 1, NULL);
-            LineTo(hdc, cellRect.right - 1, cellRect.top + 1);
-            LineTo(hdc, cellRect.right - 1, cellRect.bottom - 1);
-            LineTo(hdc, cellRect.left + 1, cellRect.bottom - 1);
-            LineTo(hdc, cellRect.left + 1, cellRect.top + 1);
-            SelectObject(hdc, gridPen);
-        }
-
-        dayTextRect = cellRect;
-        dayTextRect.left += 7;
-        dayTextRect.top += 6;
-        wsprintfW(text, L"%d", day);
-        SetTextColor(hdc, isSelected ? RGB(255, 255, 255)
-            : (column == 0 ? RGB(190, 50, 50)
-            : (column == 6 ? RGB(45, 95, 180) : RGB(35, 39, 47))));
-        DrawTextW(hdc, text, -1, &dayTextRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
-
-        g_app.cells[g_app.cellCount].day = day;
-        g_app.cells[g_app.cellCount].rect = cellRect;
-        ++g_app.cellCount;
-    }
-
-    SelectObject(hdc, oldPen);
     SelectObject(hdc, oldFont);
 
     {
         RECT footerRect = { gridLeft, footerTop, gridRight, footerTop + footerHeight };
         FillRect(hdc, &footerRect, footerBrush);
-        FrameRect(hdc, &footerRect, (HBRUSH)GetStockObject(GRAY_BRUSH));
+        FrameRect(hdc, &footerRect, gridBrush);
         wsprintfW(text, L"選択日: %d年%d月%d日", g_app.selectedDate.year,
             g_app.selectedDate.month, g_app.selectedDate.day);
         InflateRect(&footerRect, -10, -4);
@@ -218,11 +257,11 @@ static void DrawCalendar(HDC hdc, const RECT *clientRect)
         DrawTextW(hdc, text, -1, &footerRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
-    DeleteObject(gridPen);
     DeleteObject(todayPen);
-    DeleteObject(footerBrush);
-    DeleteObject(selectedBrush);
     DeleteObject(todayBrush);
+    DeleteObject(selectedBrush);
+    DeleteObject(footerBrush);
+    DeleteObject(gridBrush);
 }
 
 static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -240,7 +279,7 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         return 0;
 
     case WM_SIZE:
-        /* The next WM_PAINT recalculates both drawing rectangles and hit areas. */
+        /* A repaint updates all 42 cell rectangles before the next click. */
         InvalidateRect(hwnd, NULL, TRUE);
         return 0;
 
@@ -260,11 +299,12 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
                 return 0;
             }
 
-            for (cellIndex = 0; cellIndex < g_app.cellCount; ++cellIndex) {
-                if (PtInRect(&g_app.cells[cellIndex].rect, point)) {
+            for (cellIndex = 0; cellIndex < CALENDAR_GRID_CELL_COUNT; ++cellIndex) {
+                CalendarCell *cell = &g_app.cells[cellIndex];
+                if (cell->hasDay && PtInRect(&cell->rect, point)) {
                     g_app.selectedDate.year = g_app.displayedYear;
                     g_app.selectedDate.month = g_app.displayedMonth;
-                    g_app.selectedDate.day = g_app.cells[cellIndex].day;
+                    g_app.selectedDate.day = cell->day;
                     InvalidateRect(hwnd, NULL, TRUE);
                     return 0;
                 }
