@@ -1,0 +1,4 @@
+id,date,start_time,end_time,title,note,status,source
+1,2026-08-25,09:00,10:00,Power BI作業,月次資料作成,planned,worklog
+2,2026-08-25,13:00,14:30,Memo Nexus修正,保存処理確認,planned,worklog
+3,2026-08-26,18:00,19:00,C言語学習,Calendar module確認,planned,worklog

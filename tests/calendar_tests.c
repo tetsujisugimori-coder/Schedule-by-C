@@ -33,6 +33,13 @@ int main(void)
     assert(Calendar_DayOfWeek(2026, 8, 1) == 6);
     assert(Calendar_DayOfWeek(2026, 2, 1) == 0);
     assert(Calendar_DaysInMonth(2026, 4) == 30);
+    assert(Calendar_DaysInMonth(2026, 0) == 0);
+    assert(Calendar_DaysInMonth(2026, 13) == 0);
+    assert(Calendar_IsValidDate(2026, 8, 1));
+    assert(Calendar_IsValidDate(2026, 8, 31));
+    assert(!Calendar_IsValidDate(2026, 8, 32));
+    assert(Calendar_IsValidDate(2024, 2, 29));
+    assert(!Calendar_IsValidDate(2026, 2, 29));
 
     AssertMonthAssignment(2026, 2, 0, 28);
     AssertMonthAssignment(2024, 2, 4, 29);
