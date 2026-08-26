@@ -5,6 +5,7 @@
 
 int Calendar_IsLeapYear(int year);
 int Calendar_DaysInMonth(int year, int month);
+int Calendar_IsValidDate(int year, int month, int day);
 int Calendar_DayOfWeek(int year, int month, int day);
 void Calendar_AssignMonthDays(int year, int month,
     int cellDays[CALENDAR_GRID_CELL_COUNT]);

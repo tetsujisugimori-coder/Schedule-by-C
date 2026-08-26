@@ -11,11 +11,27 @@ int Calendar_DaysInMonth(int year, int month)
         31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
     };
 
+    if (month < 1 || month > 12) {
+        return 0;
+    }
+
     if (month == 2) {
         return days[1] + Calendar_IsLeapYear(year);
     }
 
     return days[month - 1];
+}
+
+int Calendar_IsValidDate(int year, int month, int day)
+{
+    int daysInMonth;
+
+    if (year < 1) {
+        return 0;
+    }
+
+    daysInMonth = Calendar_DaysInMonth(year, month);
+    return day >= 1 && day <= daysInMonth;
 }
 
 int Calendar_DayOfWeek(int year, int month, int day)

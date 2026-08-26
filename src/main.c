@@ -1,11 +1,21 @@
 #include <windows.h>
 #include <windowsx.h>
+#include <wchar.h>
 
 #include "calendar.h"
+#include "schedule.h"
+#include "storage.h"
 
 #define WINDOW_CLASS_NAME L"ScheduleByCWindow"
 #define CALENDAR_COLUMNS 7
 #define CALENDAR_ROWS 6
+#define SCHEDULE_MARKER L"*"
+#define SCHEDULE_FILE_NAME L"schedule.csv"
+#define SCHEDULE_PATH_ENV L"SCHEDULE_BY_C_DATA_FILE"
+#define CALENDAR_MARGIN 20
+#define MIN_CALENDAR_ROW_HEIGHT 36
+#define MIN_CLIENT_WIDTH 640
+#define MIN_CLIENT_HEIGHT 560
 
 typedef struct {
     int year;
@@ -27,6 +37,8 @@ typedef struct {
     CalendarCell cells[CALENDAR_GRID_CELL_COUNT];
     RECT previousMonthRect;
     RECT nextMonthRect;
+    ScheduleCollection schedules;
+    StorageLoadResult loadResult;
 } AppState;
 
 static AppState g_app;
@@ -39,6 +51,64 @@ static int MinInt(int left, int right)
 static int IsSameDate(CalendarDate left, int year, int month, int day)
 {
     return left.year == year && left.month == month && left.day == day;
+}
+
+static void UseRelativeScheduleFilePath(WCHAR path[MAX_PATH])
+{
+    size_t fileNameLength = wcslen(SCHEDULE_FILE_NAME);
+
+    wmemcpy(path, SCHEDULE_FILE_NAME, fileNameLength + 1);
+}
+
+static void GetScheduleFilePath(WCHAR path[MAX_PATH])
+{
+    DWORD environmentLength = GetEnvironmentVariableW(SCHEDULE_PATH_ENV,
+        path, MAX_PATH);
+    DWORD executableLength;
+    WCHAR *separator;
+    size_t directoryLength;
+    size_t fileNameLength;
+
+    if (environmentLength > 0 && environmentLength < MAX_PATH) {
+        return;
+    }
+
+    path[0] = L'\0';
+    executableLength = GetModuleFileNameW(NULL, path, MAX_PATH);
+    if (executableLength == 0 || executableLength >= MAX_PATH) {
+        UseRelativeScheduleFilePath(path);
+        return;
+    }
+
+    separator = wcsrchr(path, L'\\');
+    if (separator == NULL) {
+        UseRelativeScheduleFilePath(path);
+        return;
+    }
+
+    directoryLength = (size_t)(separator - path) + 1;
+    fileNameLength = wcslen(SCHEDULE_FILE_NAME);
+    if (directoryLength + fileNameLength >= MAX_PATH) {
+        UseRelativeScheduleFilePath(path);
+        return;
+    }
+    wmemcpy(path + directoryLength, SCHEDULE_FILE_NAME, fileNameLength + 1);
+}
+
+static void Utf8ToWide(const char *source, WCHAR *destination,
+    int destinationCount)
+{
+    int converted;
+
+    if (destinationCount <= 0) {
+        return;
+    }
+
+    converted = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, source, -1,
+        destination, destinationCount);
+    if (converted == 0) {
+        lstrcpynW(destination, L"(文字コードエラー)", destinationCount);
+    }
 }
 
 static void MoveDisplayedMonth(int direction)
@@ -111,6 +181,7 @@ static void DrawCalendarDays(HDC hdc, HBRUSH emptyCellBrush,
         int column;
         int isSelected;
         int isToday;
+        int hasSchedule;
 
         if (!cell->hasDay) {
             continue;
@@ -121,6 +192,8 @@ static void DrawCalendarDays(HDC hdc, HBRUSH emptyCellBrush,
             g_app.displayedMonth, cell->day);
         isToday = IsSameDate(g_app.today, g_app.displayedYear,
             g_app.displayedMonth, cell->day);
+        hasSchedule = Schedule_HasForDate(&g_app.schedules,
+            g_app.displayedYear, g_app.displayedMonth, cell->day);
 
         /* Fill first, restore the border, then draw the number last. */
         FillRect(hdc, &cell->rect, isSelected ? selectedBrush
@@ -145,7 +218,149 @@ static void DrawCalendarDays(HDC hdc, HBRUSH emptyCellBrush,
             : (column == 0 ? RGB(190, 50, 50)
             : (column == 6 ? RGB(45, 95, 180) : RGB(35, 39, 47))));
         DrawTextW(hdc, text, -1, &dayTextRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+        if (hasSchedule) {
+            RECT markerRect = cell->rect;
+            markerRect.right -= 7;
+            markerRect.top += 4;
+            SetTextColor(hdc, isSelected ? RGB(255, 255, 255)
+                : RGB(215, 105, 25));
+            DrawTextW(hdc, SCHEDULE_MARKER, -1, &markerRect,
+                DT_RIGHT | DT_TOP | DT_SINGLELINE);
+        }
     }
+}
+
+static void DrawScheduleFooter(HDC hdc, const RECT *footerRect,
+    HBRUSH footerBrush, HBRUSH gridBrush)
+{
+    const Schedule *matches[MAX_SCHEDULES];
+    size_t matchCount;
+    size_t index;
+    RECT contentRect = *footerRect;
+    WCHAR text[MAX_TITLE_LENGTH + 32];
+    WCHAR startTime[MAX_TIME_LENGTH + 1];
+    WCHAR endTime[MAX_TIME_LENGTH + 1];
+    WCHAR title[MAX_TITLE_LENGTH + 1];
+    WCHAR note[MAX_NOTE_LENGTH + 1];
+    int y;
+
+    FillRect(hdc, footerRect, footerBrush);
+    FrameRect(hdc, footerRect, gridBrush);
+    InflateRect(&contentRect, -10, -7);
+
+    matchCount = Schedule_GetForDate(&g_app.schedules,
+        g_app.selectedDate.year, g_app.selectedDate.month,
+        g_app.selectedDate.day, matches, MAX_SCHEDULES);
+
+    wsprintfW(text, L"選択日: %d年%d月%d日    予定: %u件",
+        g_app.selectedDate.year, g_app.selectedDate.month,
+        g_app.selectedDate.day, (unsigned int)matchCount);
+    SetTextColor(hdc, RGB(35, 39, 47));
+    DrawTextW(hdc, text, -1, &contentRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+    {
+        RECT statusRect = contentRect;
+        statusRect.left = contentRect.left + (contentRect.right - contentRect.left) / 2;
+        if (g_app.loadResult.status == STORAGE_LOAD_READ_ERROR) {
+            lstrcpynW(text, L"予定データの読み込み中にエラーが発生しました",
+                (int)(sizeof(text) / sizeof(text[0])));
+        } else if (g_app.loadResult.status == STORAGE_LOAD_FILE_NOT_FOUND
+            || g_app.schedules.count == 0) {
+            lstrcpynW(text, L"予定データなし", (int)(sizeof(text) / sizeof(text[0])));
+        } else if (g_app.loadResult.skippedCount > 0) {
+            wsprintfW(text, L"読込: %u件 / スキップ: %u行",
+                (unsigned int)g_app.loadResult.loadedCount,
+                (unsigned int)g_app.loadResult.skippedCount);
+        } else {
+            wsprintfW(text, L"読込: %u件",
+                (unsigned int)g_app.loadResult.loadedCount);
+        }
+        SetTextColor(hdc, RGB(90, 96, 108));
+        DrawTextW(hdc, text, -1, &statusRect,
+            DT_RIGHT | DT_TOP | DT_SINGLELINE);
+    }
+
+    y = contentRect.top + 27;
+    if (matchCount == 0) {
+        RECT messageRect = contentRect;
+        messageRect.top = y;
+        SetTextColor(hdc, RGB(75, 80, 90));
+        DrawTextW(hdc, L"予定はありません。", -1, &messageRect,
+            DT_LEFT | DT_TOP | DT_SINGLELINE);
+        return;
+    }
+
+    for (index = 0; index < matchCount; ++index) {
+        const Schedule *schedule = matches[index];
+        RECT lineRect = contentRect;
+
+        if (y + 22 > contentRect.bottom) {
+            break;
+        }
+
+        Utf8ToWide(schedule->title, title,
+            (int)(sizeof(title) / sizeof(title[0])));
+        Utf8ToWide(schedule->startTime, startTime,
+            (int)(sizeof(startTime) / sizeof(startTime[0])));
+        Utf8ToWide(schedule->endTime, endTime,
+            (int)(sizeof(endTime) / sizeof(endTime[0])));
+        wsprintfW(text, L"%s - %s  %s", startTime, endTime, title);
+        lineRect.top = y;
+        SetTextColor(hdc, RGB(35, 39, 47));
+        DrawTextW(hdc, text, -1, &lineRect,
+            DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+        y += 21;
+
+        if (schedule->note[0] != '\0' && y + 18 <= contentRect.bottom) {
+            Utf8ToWide(schedule->note, note,
+                (int)(sizeof(note) / sizeof(note[0])));
+            lineRect.top = y;
+            lineRect.left += 22;
+            SetTextColor(hdc, RGB(90, 96, 108));
+            DrawTextW(hdc, note, -1, &lineRect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+            y += 20;
+        }
+        y += 5;
+    }
+
+    if (index < matchCount) {
+        RECT remainingRect = contentRect;
+        remainingRect.top = contentRect.bottom - 20;
+        wsprintfW(text, L"ほか %u件（ウィンドウを縦に広げると表示できます）",
+            (unsigned int)(matchCount - index));
+        SetTextColor(hdc, RGB(90, 96, 108));
+        DrawTextW(hdc, text, -1, &remainingRect,
+            DT_RIGHT | DT_TOP | DT_SINGLELINE);
+    }
+}
+
+static void CalculateVerticalLayout(int clientHeight, int gridTop,
+    int *gridBottom, int *footerTop, int *footerHeight)
+{
+    int desiredFooterHeight = clientHeight / 3;
+    int minimumFooterTop = gridTop
+        + CALENDAR_ROWS * MIN_CALENDAR_ROW_HEIGHT + 8;
+    int availableFooterHeight = clientHeight - CALENDAR_MARGIN
+        - minimumFooterTop;
+
+    if (desiredFooterHeight < 150) {
+        desiredFooterHeight = 150;
+    }
+    if (desiredFooterHeight > 280) {
+        desiredFooterHeight = 280;
+    }
+    if (availableFooterHeight < 0) {
+        availableFooterHeight = 0;
+    }
+    if (desiredFooterHeight > availableFooterHeight) {
+        desiredFooterHeight = availableFooterHeight;
+    }
+
+    *footerHeight = desiredFooterHeight;
+    *footerTop = clientHeight - CALENDAR_MARGIN - desiredFooterHeight;
+    *gridBottom = *footerTop - 8;
 }
 
 static void DrawCalendar(HDC hdc, const RECT *clientRect)
@@ -153,18 +368,18 @@ static void DrawCalendar(HDC hdc, const RECT *clientRect)
     static const WCHAR *weekdays[CALENDAR_COLUMNS] = {
         L"日", L"月", L"火", L"水", L"木", L"金", L"土"
     };
-    const int margin = 20;
+    const int margin = CALENDAR_MARGIN;
     const int headerTop = 16;
     const int headerHeight = 46;
     const int weekdayTop = 68;
     const int weekdayHeight = 26;
-    const int footerHeight = 42;
     int clientWidth = clientRect->right - clientRect->left;
     int clientHeight = clientRect->bottom - clientRect->top;
+    int footerHeight;
     int gridLeft = margin;
     int gridRight = clientWidth - margin;
     int gridTop = weekdayTop + weekdayHeight;
-    int footerTop = clientHeight - margin - footerHeight;
+    int footerTop;
     int gridBottom;
     int columnWidth;
     int rowHeight;
@@ -179,16 +394,15 @@ static void DrawCalendar(HDC hdc, const RECT *clientRect)
     HBRUSH todayBrush = CreateSolidBrush(RGB(255, 242, 204));
     HPEN todayPen = CreatePen(PS_SOLID, 2, RGB(220, 130, 30));
 
+    CalculateVerticalLayout(clientHeight, gridTop, &gridBottom, &footerTop,
+        &footerHeight);
+
     FillRect(hdc, clientRect, emptyCellBrush);
     SetBkMode(hdc, TRANSPARENT);
 
     if (gridRight <= gridLeft) {
         gridRight = gridLeft + CALENDAR_COLUMNS;
     }
-    if (footerTop <= gridTop + CALENDAR_ROWS + 8) {
-        footerTop = gridTop + CALENDAR_ROWS + 8;
-    }
-    gridBottom = footerTop - 8;
     columnWidth = (gridRight - gridLeft) / CALENDAR_COLUMNS;
     rowHeight = (gridBottom - gridTop) / CALENDAR_ROWS;
     if (columnWidth < 1) {
@@ -248,13 +462,7 @@ static void DrawCalendar(HDC hdc, const RECT *clientRect)
 
     {
         RECT footerRect = { gridLeft, footerTop, gridRight, footerTop + footerHeight };
-        FillRect(hdc, &footerRect, footerBrush);
-        FrameRect(hdc, &footerRect, gridBrush);
-        wsprintfW(text, L"選択日: %d年%d月%d日", g_app.selectedDate.year,
-            g_app.selectedDate.month, g_app.selectedDate.day);
-        InflateRect(&footerRect, -10, -4);
-        SetTextColor(hdc, RGB(35, 39, 47));
-        DrawTextW(hdc, text, -1, &footerRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        DrawScheduleFooter(hdc, &footerRect, footerBrush, gridBrush);
     }
 
     DeleteObject(todayPen);
@@ -267,6 +475,23 @@ static void DrawCalendar(HDC hdc, const RECT *clientRect)
 static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message) {
+    case WM_GETMINMAXINFO:
+        {
+            MINMAXINFO *minMaxInfo = (MINMAXINFO *)lParam;
+            RECT minimumRect = { 0, 0, MIN_CLIENT_WIDTH, MIN_CLIENT_HEIGHT };
+            DWORD style = (DWORD)GetWindowLongPtrW(hwnd, GWL_STYLE);
+            DWORD extendedStyle = (DWORD)GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+
+            if (AdjustWindowRectEx(&minimumRect, style,
+                GetMenu(hwnd) != NULL, extendedStyle)) {
+                minMaxInfo->ptMinTrackSize.x = minimumRect.right
+                    - minimumRect.left;
+                minMaxInfo->ptMinTrackSize.y = minimumRect.bottom
+                    - minimumRect.top;
+            }
+        }
+        return 0;
+
     case WM_PAINT:
         {
             PAINTSTRUCT paint;
@@ -327,6 +552,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previousInstance,
     HWND hwnd;
     MSG message;
     SYSTEMTIME now;
+    WCHAR scheduleFilePath[MAX_PATH];
 
     (void)previousInstance;
     (void)commandLine;
@@ -338,6 +564,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previousInstance,
     g_app.selectedDate = g_app.today;
     g_app.displayedYear = now.wYear;
     g_app.displayedMonth = now.wMonth;
+    GetScheduleFilePath(scheduleFilePath);
+    g_app.loadResult = Storage_LoadSchedules(scheduleFilePath, &g_app.schedules);
 
     ZeroMemory(&windowClass, sizeof(windowClass));
     windowClass.hInstance = instance;
