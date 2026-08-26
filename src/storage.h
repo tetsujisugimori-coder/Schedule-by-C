@@ -12,6 +12,7 @@
 typedef enum {
     STORAGE_LOAD_OK,
     STORAGE_LOAD_FILE_NOT_FOUND,
+    STORAGE_LOAD_INVALID_FORMAT,
     STORAGE_LOAD_READ_ERROR
 } StorageLoadStatus;
 
@@ -19,6 +20,7 @@ typedef struct {
     StorageLoadStatus status;
     size_t loadedCount;
     size_t skippedCount;
+    int errorNumber;
 } StorageLoadResult;
 
 StorageLoadResult Storage_LoadSchedules(const wchar_t *filePath,

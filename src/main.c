@@ -1,17 +1,16 @@
 #include <windows.h>
 #include <windowsx.h>
+#include <errno.h>
 #include <wchar.h>
 
 #include "calendar.h"
 #include "schedule.h"
-#include "storage.h"
+#include "schedule_data.h"
 
 #define WINDOW_CLASS_NAME L"ScheduleByCWindow"
 #define CALENDAR_COLUMNS 7
 #define CALENDAR_ROWS 6
 #define SCHEDULE_MARKER L"*"
-#define SCHEDULE_FILE_NAME L"schedule.csv"
-#define SCHEDULE_PATH_ENV L"SCHEDULE_BY_C_DATA_FILE"
 #define CALENDAR_MARGIN 20
 #define MIN_CALENDAR_ROW_HEIGHT 36
 #define MIN_CLIENT_WIDTH 640
@@ -38,7 +37,10 @@ typedef struct {
     RECT previousMonthRect;
     RECT nextMonthRect;
     ScheduleCollection schedules;
-    StorageLoadResult loadResult;
+    ScheduleDataLoadResult loadResult;
+    WCHAR scheduleFilePath[SCHEDULE_CSV_PATH_CAPACITY];
+    int hasSuccessfulLoad;
+    int loadWasUserRequested;
 } AppState;
 
 static AppState g_app;
@@ -51,48 +53,6 @@ static int MinInt(int left, int right)
 static int IsSameDate(CalendarDate left, int year, int month, int day)
 {
     return left.year == year && left.month == month && left.day == day;
-}
-
-static void UseRelativeScheduleFilePath(WCHAR path[MAX_PATH])
-{
-    size_t fileNameLength = wcslen(SCHEDULE_FILE_NAME);
-
-    wmemcpy(path, SCHEDULE_FILE_NAME, fileNameLength + 1);
-}
-
-static void GetScheduleFilePath(WCHAR path[MAX_PATH])
-{
-    DWORD environmentLength = GetEnvironmentVariableW(SCHEDULE_PATH_ENV,
-        path, MAX_PATH);
-    DWORD executableLength;
-    WCHAR *separator;
-    size_t directoryLength;
-    size_t fileNameLength;
-
-    if (environmentLength > 0 && environmentLength < MAX_PATH) {
-        return;
-    }
-
-    path[0] = L'\0';
-    executableLength = GetModuleFileNameW(NULL, path, MAX_PATH);
-    if (executableLength == 0 || executableLength >= MAX_PATH) {
-        UseRelativeScheduleFilePath(path);
-        return;
-    }
-
-    separator = wcsrchr(path, L'\\');
-    if (separator == NULL) {
-        UseRelativeScheduleFilePath(path);
-        return;
-    }
-
-    directoryLength = (size_t)(separator - path) + 1;
-    fileNameLength = wcslen(SCHEDULE_FILE_NAME);
-    if (directoryLength + fileNameLength >= MAX_PATH) {
-        UseRelativeScheduleFilePath(path);
-        return;
-    }
-    wmemcpy(path + directoryLength, SCHEDULE_FILE_NAME, fileNameLength + 1);
 }
 
 static void Utf8ToWide(const char *source, WCHAR *destination,
@@ -238,7 +198,7 @@ static void DrawScheduleFooter(HDC hdc, const RECT *footerRect,
     size_t matchCount;
     size_t index;
     RECT contentRect = *footerRect;
-    WCHAR text[MAX_TITLE_LENGTH + 32];
+    WCHAR text[512];
     WCHAR startTime[MAX_TIME_LENGTH + 1];
     WCHAR endTime[MAX_TIME_LENGTH + 1];
     WCHAR title[MAX_TITLE_LENGTH + 1];
@@ -260,28 +220,86 @@ static void DrawScheduleFooter(HDC hdc, const RECT *footerRect,
     DrawTextW(hdc, text, -1, &contentRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
 
     {
+        RECT shortcutRect = contentRect;
         RECT statusRect = contentRect;
-        statusRect.left = contentRect.left + (contentRect.right - contentRect.left) / 2;
-        if (g_app.loadResult.status == STORAGE_LOAD_READ_ERROR) {
-            lstrcpynW(text, L"予定データの読み込み中にエラーが発生しました",
-                (int)(sizeof(text) / sizeof(text[0])));
-        } else if (g_app.loadResult.status == STORAGE_LOAD_FILE_NOT_FOUND
-            || g_app.schedules.count == 0) {
-            lstrcpynW(text, L"予定データなし", (int)(sizeof(text) / sizeof(text[0])));
-        } else if (g_app.loadResult.skippedCount > 0) {
-            wsprintfW(text, L"読込: %u件 / スキップ: %u行",
-                (unsigned int)g_app.loadResult.loadedCount,
-                (unsigned int)g_app.loadResult.skippedCount);
-        } else {
-            wsprintfW(text, L"読込: %u件",
-                (unsigned int)g_app.loadResult.loadedCount);
-        }
-        SetTextColor(hdc, RGB(90, 96, 108));
-        DrawTextW(hdc, text, -1, &statusRect,
+        RECT pathLabelRect = contentRect;
+        RECT pathValueRect = contentRect;
+        int isFailure = g_app.loadResult.status != SCHEDULE_DATA_LOAD_OK;
+
+        DrawTextW(hdc, L"R: 予定を再読み込み", -1, &shortcutRect,
             DT_RIGHT | DT_TOP | DT_SINGLELINE);
+
+        statusRect.top += 25;
+        switch (g_app.loadResult.status) {
+        case SCHEDULE_DATA_LOAD_OK:
+            if (g_app.loadResult.storageResult.skippedCount > 0) {
+                wsprintfW(text, L"%ls成功: %u件（不正な%u行をスキップ）",
+                    g_app.loadWasUserRequested ? L"再読み込み" : L"読み込み",
+                    (unsigned int)g_app.loadResult.storageResult.loadedCount,
+                    (unsigned int)g_app.loadResult.storageResult.skippedCount);
+            } else {
+                wsprintfW(text, L"%ls成功: %u件",
+                    g_app.loadWasUserRequested ? L"再読み込み" : L"読み込み",
+                    (unsigned int)g_app.loadResult.storageResult.loadedCount);
+            }
+            break;
+        case SCHEDULE_DATA_FILE_NOT_FOUND:
+            lstrcpynW(text, L"予定ファイルがまだありません",
+                (int)(sizeof(text) / sizeof(text[0])));
+            break;
+        case SCHEDULE_DATA_INVALID_FORMAT:
+            lstrcpynW(text, L"CSV形式が不正です（共通ヘッダーを確認してください）",
+                (int)(sizeof(text) / sizeof(text[0])));
+            break;
+        case SCHEDULE_DATA_READ_ERROR:
+            switch (g_app.loadResult.storageResult.errorNumber) {
+            case EACCES:
+                lstrcpynW(text, L"予定ファイルを読み込めません（アクセスが拒否されました）",
+                    (int)(sizeof(text) / sizeof(text[0])));
+                break;
+            case ENOMEM:
+                lstrcpynW(text, L"予定ファイルを読み込めません（メモリ不足です）",
+                    (int)(sizeof(text) / sizeof(text[0])));
+                break;
+            case EINVAL:
+                lstrcpynW(text, L"予定ファイルを読み込めません（パスまたは読込条件が不正です）",
+                    (int)(sizeof(text) / sizeof(text[0])));
+                break;
+            default:
+                wsprintfW(text, L"予定ファイルを読み込めません（システムエラー: %d）",
+                    g_app.loadResult.storageResult.errorNumber);
+                break;
+            }
+            break;
+        case SCHEDULE_DATA_PATH_ERROR:
+        default:
+            lstrcpynW(text,
+                SchedulePath_StatusMessage(g_app.loadResult.pathStatus),
+                (int)(sizeof(text) / sizeof(text[0])));
+            break;
+        }
+        if (isFailure && g_app.hasSuccessfulLoad) {
+            lstrcatW(text, L"（直前の予定を保持しています）");
+        }
+        SetTextColor(hdc, isFailure ? RGB(170, 55, 45) : RGB(65, 105, 70));
+        DrawTextW(hdc, text, -1, &statusRect,
+            DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+        pathLabelRect.top += 47;
+        pathLabelRect.right = pathLabelRect.left + 52;
+        pathValueRect.top = pathLabelRect.top;
+        pathValueRect.left = pathLabelRect.right;
+        SetTextColor(hdc, RGB(90, 96, 108));
+        DrawTextW(hdc, L"参照先:", -1, &pathLabelRect,
+            DT_LEFT | DT_TOP | DT_SINGLELINE);
+        DrawTextW(hdc,
+            g_app.scheduleFilePath[0] != L'\0'
+                ? g_app.scheduleFilePath
+                : L"SCHEDULE_CSV_PATH または Documents\\ScheduleData\\schedule.csv",
+            -1, &pathValueRect, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
     }
 
-    y = contentRect.top + 27;
+    y = contentRect.top + 82;
     if (matchCount == 0) {
         RECT messageRect = contentRect;
         messageRect.top = y;
@@ -472,6 +490,20 @@ static void DrawCalendar(HDC hdc, const RECT *clientRect)
     DeleteObject(gridBrush);
 }
 
+static void ReloadSchedules(HWND hwnd, int userRequested)
+{
+    g_app.loadWasUserRequested = userRequested;
+    g_app.loadResult = ScheduleData_Reload(&g_app.schedules,
+        g_app.scheduleFilePath,
+        sizeof(g_app.scheduleFilePath) / sizeof(g_app.scheduleFilePath[0]));
+    if (g_app.loadResult.status == SCHEDULE_DATA_LOAD_OK) {
+        g_app.hasSuccessfulLoad = TRUE;
+    }
+    if (hwnd != NULL) {
+        InvalidateRect(hwnd, NULL, TRUE);
+    }
+}
+
 static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message) {
@@ -507,6 +539,13 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         /* A repaint updates all 42 cell rectangles before the next click. */
         InvalidateRect(hwnd, NULL, TRUE);
         return 0;
+
+    case WM_KEYDOWN:
+        if (wParam == 'R') {
+            ReloadSchedules(hwnd, TRUE);
+            return 0;
+        }
+        break;
 
     case WM_LBUTTONDOWN:
         {
@@ -552,7 +591,6 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previousInstance,
     HWND hwnd;
     MSG message;
     SYSTEMTIME now;
-    WCHAR scheduleFilePath[MAX_PATH];
 
     (void)previousInstance;
     (void)commandLine;
@@ -564,8 +602,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previousInstance,
     g_app.selectedDate = g_app.today;
     g_app.displayedYear = now.wYear;
     g_app.displayedMonth = now.wMonth;
-    GetScheduleFilePath(scheduleFilePath);
-    g_app.loadResult = Storage_LoadSchedules(scheduleFilePath, &g_app.schedules);
+    ScheduleCollection_Init(&g_app.schedules);
+    ReloadSchedules(NULL, FALSE);
 
     ZeroMemory(&windowClass, sizeof(windowClass));
     windowClass.hInstance = instance;

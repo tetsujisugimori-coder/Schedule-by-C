@@ -16,7 +16,9 @@ static FILE *OpenFileForReading(const wchar_t *filePath)
     FILE *file = NULL;
 
 #ifdef _MSC_VER
-    if (_wfopen_s(&file, filePath, L"rb") != 0) {
+    errno_t openError = _wfopen_s(&file, filePath, L"rb");
+    if (openError != 0) {
+        errno = (int)openError;
         return NULL;
     }
 #else
@@ -212,13 +214,14 @@ static int ConvertFieldsToSchedule(
 StorageLoadResult Storage_LoadSchedules(const wchar_t *filePath,
     ScheduleCollection *collection)
 {
-    StorageLoadResult result = { STORAGE_LOAD_OK, 0, 0 };
+    StorageLoadResult result = { STORAGE_LOAD_OK, 0, 0, 0 };
     char line[MAX_CSV_LINE_LENGTH + 2];
     FILE *file;
     int firstContentLine = 1;
 
     if (collection == NULL || filePath == NULL) {
         result.status = STORAGE_LOAD_READ_ERROR;
+        result.errorNumber = EINVAL;
         return result;
     }
 
@@ -226,6 +229,7 @@ StorageLoadResult Storage_LoadSchedules(const wchar_t *filePath,
     errno = 0;
     file = OpenFileForReading(filePath);
     if (file == NULL) {
+        result.errorNumber = errno;
         result.status = (errno == ENOENT)
             ? STORAGE_LOAD_FILE_NOT_FOUND : STORAGE_LOAD_READ_ERROR;
         return result;
@@ -254,11 +258,14 @@ StorageLoadResult Storage_LoadSchedules(const wchar_t *filePath,
             continue;
         }
 
-        if (firstContentLine && strcmp(content, SCHEDULE_CSV_HEADER) == 0) {
+        if (firstContentLine) {
             firstContentLine = 0;
-            continue;
+            if (strcmp(content, SCHEDULE_CSV_HEADER) == 0) {
+                continue;
+            }
+            result.status = STORAGE_LOAD_INVALID_FORMAT;
+            break;
         }
-        firstContentLine = 0;
 
         if (!ParseCsvLine(content, fields)
             || !ConvertFieldsToSchedule(fields, &schedule)
@@ -272,6 +279,7 @@ StorageLoadResult Storage_LoadSchedules(const wchar_t *filePath,
 
     if (ferror(file)) {
         result.status = STORAGE_LOAD_READ_ERROR;
+        result.errorNumber = errno != 0 ? errno : EIO;
     }
     fclose(file);
     return result;

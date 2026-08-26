@@ -18,16 +18,19 @@ Memo Nexus / Google Calendar / Outlook
 
 - 7列×6行の月間カレンダー表示
 - 前月・翌月への移動と日付選択
-- `schedule.csv` の起動時読み込み
+- 共通の`schedule.csv`を起動時に読み込み
+- `R`キーで共通CSVのパスを再解決して再読み込み
 - 予定がある日への `*` 表示
 - 選択日の予定を開始時刻順で下部領域へ表示
-- CSVがない場合や一部の行が不正な場合も、カレンダーを継続表示
+- CSVがない場合や読込に失敗した場合も、カレンダーと直前の正常データを継続表示
 
 ## 構成
 
 - `src/main.c`: Win32ウィンドウ、GDI描画、クリック処理、各モジュールの調整
 - `src/calendar.c` / `src/calendar.h`: うるう年、月の日数、曜日、年月移動、42セルへの日付割り当て
 - `src/schedule.c` / `src/schedule.h`: `Schedule`構造体、日付検索、予定有無判定、開始時刻順の取得
+- `src/schedule_path.c` / `src/schedule_path.h`: 共通CSVのパス解決
+- `src/schedule_data.c` / `src/schedule_data.h`: 起動時読込と、失敗時に直前データを保持する再読み込み
 - `src/storage.c` / `src/storage.h`: CSVファイルI/O、CSV解析、値の検証、`Schedule`への変換
 - `tests/`: 日付計算、予定検索・並び替え、CSV読み込みのテスト
 - `schedule.example.csv`: CSV書式を確認するためのサンプル（実データではありません）
@@ -78,17 +81,30 @@ id,date,start_time,end_time,title,note,status,source
 
 ## データファイルの場所
 
-`schedule.example.csv`は書式確認用のサンプルです。`schedule.csv`は作業ログアプリや利用者が管理する実データであり、Git管理の対象外です。
+作業ログアプリとSchedule by Cは、PC内の同一の`schedule.csv`を共有します。作業ログアプリが書き込みを担当し、Schedule by Cは読み込み専用です。アプリ間でCSVをコピーして同期しません。
 
-CMakeビルドでは、サンプルを`schedule.example.csv`の名前のまま実行ファイルと同じフォルダーへコピーします。実データの`schedule.csv`は作成・更新・上書きしません。サンプルを試す場合だけ、利用者が明示的にコピーしてください。
+参照先は次の優先順位で決まります。
 
-アプリは実行ファイルと同じフォルダーの`schedule.csv`を起動時に一度読み込みます。
+1. 空でない環境変数`SCHEDULE_CSV_PATH`の値
+2. 現在のWindowsユーザーの`Documents\ScheduleData\schedule.csv`
 
-作業ログアプリと別の共通ファイルを使う場合は、環境変数`SCHEDULE_BY_C_DATA_FILE`に絶対パスを指定できます。この場合、実行ファイルと同じフォルダーへサンプルCSVを`schedule.csv`としてコピーする必要はありません。ビルド方式別のコピー先と起動コマンドは、次の「ビルドと実行」を参照してください。
+たとえば既定パスは次の形です。
 
-予定ファイルのパスはWindowsのUnicode APIで扱うため、日本語・空白・従来のANSIコードページで表現できない文字を含むパスも指定できます。CSV内部の文字コードはパスとは別に、引き続きUTF-8です。環境変数が空、未設定、または長すぎる場合は、実行ファイルと同じフォルダーの`schedule.csv`へ安全にフォールバックします。
+```text
+C:\Users\<ユーザー名>\Documents\ScheduleData\schedule.csv
+```
 
-ファイルがない場合は「予定データなし」と表示し、通常のカレンダーとして動作します。
+PowerShellで現在のターミナルだけ参照先を変更する例:
+
+```powershell
+$env:SCHEDULE_CSV_PATH = "C:\Users\<ユーザー名>\Documents\ScheduleData\schedule.csv"
+```
+
+環境変数をWindowsへ永続的に設定した場合、その設定をSchedule by Cへ反映するには新しいターミナルを開き直してから起動してください。
+
+予定ファイルのパスはWindowsのUnicode APIで扱うため、日本語や空白を含むパスにも対応します。CSVの内容はUTF-8です。`schedule.example.csv`は書式確認用であり、ビルド時もサンプル名のままコピーされます。Schedule by Cは実データのCSVを作成・更新・削除せず、`build\Debug\schedule.csv`やカレントディレクトリの`schedule.csv`へフォールバックしません。
+
+ファイルが未作成なら「予定ファイルがまだありません」と参照先フルパスを表示し、予定0件のカレンダーとして起動します。CSV形式不正や読込失敗時は原因と参照先を表示し、再読み込み前に正常表示していた予定は保持します。
 
 ## ビルドと実行
 
@@ -102,20 +118,16 @@ MSVC・Visual Studio系のマルチ構成ジェネレーターでは、Debug構�
 
 - 実行ファイル: `.\build\Debug\ScheduleByC.exe`
 - サンプルCSV: `.\build\Debug\schedule.example.csv`
-- 実データCSV: `.\build\Debug\schedule.csv`
 
-ビルド、サンプルのコピー、共有ファイルを指定した起動、CTestは次のコマンドで実行できます。
+ビルド、共通CSVを指定した起動、CTestは次のコマンドで実行できます。
 
 ```powershell
 cmake -S . -B build
 cmake --build build --config Debug
-Copy-Item .\build\Debug\schedule.example.csv .\build\Debug\schedule.csv
-$env:SCHEDULE_BY_C_DATA_FILE = 'C:\shared\schedule.csv'
+$env:SCHEDULE_CSV_PATH = "C:\Users\<ユーザー名>\Documents\ScheduleData\schedule.csv"
 .\build\Debug\ScheduleByC.exe
 ctest --test-dir build -C Debug --output-on-failure
 ```
-
-`SCHEDULE_BY_C_DATA_FILE`で共有ファイルを指定して起動する場合、`Copy-Item`の行は不要です。環境変数を指定せず、同梱サンプルを実データとして試す場合だけコピーしてください。
 
 ### MinGW・MSYS2 UCRT64 GCC系
 
@@ -123,20 +135,16 @@ MinGW・MSYS2 UCRT64 GCC系の単一構成ジェネレーターでは、ファ�
 
 - 実行ファイル: `.\build\ScheduleByC.exe`
 - サンプルCSV: `.\build\schedule.example.csv`
-- 実データCSV: `.\build\schedule.csv`
 
-ビルド、サンプルのコピー、共有ファイルを指定した起動、CTestは次のコマンドで実行できます。
+ビルド、共通CSVを指定した起動、CTestは次のコマンドで実行できます。
 
 ```powershell
 cmake -S . -B build
 cmake --build build
-Copy-Item .\build\schedule.example.csv .\build\schedule.csv
-$env:SCHEDULE_BY_C_DATA_FILE = 'C:\shared\schedule.csv'
+$env:SCHEDULE_CSV_PATH = "C:\Users\<ユーザー名>\Documents\ScheduleData\schedule.csv"
 .\build\ScheduleByC.exe
 ctest --test-dir build --output-on-failure
 ```
-
-`SCHEDULE_BY_C_DATA_FILE`で共有ファイルを指定して起動する場合、こちらも`Copy-Item`の行は不要です。
 
 ### ジェネレーターごとにビルドディレクトリを分ける
 
@@ -154,14 +162,16 @@ MSVCで直接ビルドする場合:
 
 ```powershell
 cl /TC /W4 /utf-8 /DUNICODE /D_UNICODE `
-  src\main.c src\calendar.c src\schedule.c src\storage.c `
-  /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib /OUT:ScheduleByC.exe
+  src\main.c src\calendar.c src\schedule.c src\schedule_data.c `
+  src\schedule_path.c src\storage.c `
+  /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib shell32.lib ole32.lib /OUT:ScheduleByC.exe
 ```
 
 ## 操作
 
 - タイトル左右の`<`と`>`をクリック: 前月・翌月へ移動
 - 日付セルをクリック: 選択日を変更し、その日の予定を下部へ表示
+- `R`キー: `SCHEDULE_CSV_PATH`を含めて参照先を再解決し、予定CSVを再読み込み
 - `*`が付いた日: 予定あり
 - 月初前・月末後の空白セルをクリック: 選択日は変更しない
 - ウィンドウを縦に広げる: 下部に表示できる予定件数が増える
@@ -185,7 +195,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-日付検索（0件・1件・複数件）、開始時刻順、重複ID拒否、開始・終了時刻の前後関係、正常CSV、ファイルなし、空ファイル、不正行、ヘッダーのみ、引用符付き値、長大行、Unicodeファイルパス、月初・月末、うるう年、年跨ぎを確認します。
+日付検索（0件・1件・複数件）、開始時刻順、重複ID拒否、開始・終了時刻の前後関係、正常CSV、ファイルなし、空ファイル、不正行・不正ヘッダー、引用符付き値、長大行、Unicodeファイルパス、`SCHEDULE_CSV_PATH`優先、Documents既定パス、CSV追加後の再読み込み、不正CSV・読込失敗時の直前データ保持、月初・月末、うるう年、年跨ぎを確認します。パス・再読み込みテストは一時ディレクトリと`SCHEDULE_CSV_PATH`を使い、実際のDocumentsフォルダーへファイルを書きません。
 
 ## 将来の連携
 

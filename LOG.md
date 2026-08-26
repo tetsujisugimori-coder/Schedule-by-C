@@ -87,3 +87,23 @@
 - Confirmed the documented MSVC files exist at `build\Debug\ScheduleByC.exe`, `build\Debug\schedule.example.csv`, and `build\Debug\schedule.csv`.
 - The MSYS2 UCRT64 GCC compiler remained available, so the application and all three test executables were rebuilt directly with `-Wall -Wextra -Wpedantic -Werror`; all three tests passed. GCC CTest was not run because no MinGW Make or Ninja build tool was available for a CMake generator in the current environment.
 - This was a documentation-only change. No C source code or CMake behavior was changed.
+
+## 2026-08-26: Shared local schedule CSV and live reload
+
+- Confirmed this repository is Schedule by C, the read-only consumer of the shared schedule CSV. No files in the separate worklog application repository were changed.
+- Replaced the executable-directory and current-directory lookup with `src/schedule_path.c` and `src/schedule_path.h`. The resolver now prefers a non-empty `SCHEDULE_CSV_PATH`, otherwise uses the Windows Documents known folder plus `ScheduleData\schedule.csv`.
+- Kept path handling Unicode-native and made environment-path overflow, invalid arguments, and Documents-folder lookup failure explicit errors. Added the required `shell32` and `ole32` link dependencies in CMake.
+- Added `src/schedule_data.c` and `src/schedule_data.h` to re-resolve the path for every load and load into a temporary collection. A successful read atomically replaces the displayed schedules; missing files, invalid headers, read errors, and path errors preserve the last successfully displayed collection.
+- Added `R` as the visible GUI reload shortcut. The footer now shows reload success or failure, invalid-row counts, a specific failure reason, whether prior data was retained, and the attempted full path.
+- Kept Schedule by C read-only. It does not create `ScheduleData`, create or update `schedule.csv`, delete old build CSV files, or copy runtime CSV data between applications.
+- Tightened top-level CSV validation so a non-empty file must begin with the existing `id,date,start_time,end_time,title,note,status,source` header. Existing per-row validation and partial loading of invalid data rows remain unchanged.
+- Updated the README to document the shared-file contract, default Documents path, `SCHEDULE_CSV_PATH`, the PowerShell example, reopening a terminal after persistent environment changes, and the `R` reload operation.
+
+## Verification for shared local schedule CSV and live reload
+
+- Before changes, configured and built the existing MSVC Debug build and ran CTest: all existing tests passed (3/3); there were no pre-existing failures.
+- After changes, built the MSVC Debug configuration with `/W4`: all application and test targets built successfully.
+- Ran CTest: `CalendarTests`, `ScheduleTests`, `StorageTests`, `SchedulePathTests`, and `ScheduleDataTests` all passed (5/5).
+- `SchedulePathTests` verifies `SCHEDULE_CSV_PATH` priority, insufficient-buffer failure, and the Windows Documents default without writing to Documents.
+- `ScheduleDataTests` uses a unique Windows temporary directory and `SCHEDULE_CSV_PATH`. It verifies missing-file startup behavior, replacement after a CSV record is added, path re-resolution, invalid-header retention, and read-error retention.
+- Remaining constraints: schedules that cross midnight and multiline CSV fields are unsupported; in-memory collection and field sizes remain fixed; Schedule by C intentionally provides no schedule creation, editing, deletion, directory creation, or external calendar API operations.
