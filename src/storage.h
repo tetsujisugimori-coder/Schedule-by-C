@@ -2,6 +2,7 @@
 #define SCHEDULE_BY_C_STORAGE_H
 
 #include <stddef.h>
+#include <wchar.h>
 
 #include "schedule.h"
 
@@ -20,7 +21,7 @@ typedef struct {
     size_t skippedCount;
 } StorageLoadResult;
 
-StorageLoadResult Storage_LoadSchedules(const char *filePath,
+StorageLoadResult Storage_LoadSchedules(const wchar_t *filePath,
     ScheduleCollection *collection);
 
 #endif

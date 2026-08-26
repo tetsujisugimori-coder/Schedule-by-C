@@ -30,7 +30,7 @@ Memo Nexus / Google Calendar / Outlook
 - `src/schedule.c` / `src/schedule.h`: `Schedule`構造体、日付検索、予定有無判定、開始時刻順の取得
 - `src/storage.c` / `src/storage.h`: CSVファイルI/O、CSV解析、値の検証、`Schedule`への変換
 - `tests/`: 日付計算、予定検索・並び替え、CSV読み込みのテスト
-- `schedule.csv`: 作業ログアプリと共有する予定データのサンプル
+- `schedule.example.csv`: CSV書式を確認するためのサンプル（実データではありません）
 
 カレンダー描画側はCSVの形式を知りません。将来CSVをSQLite、JSON、iCalendarなどへ置き換える場合も、`storage`層で`ScheduleCollection`を生成すれば、`calendar`側を大きく変更せずに済む構造です。
 
@@ -72,10 +72,21 @@ id,date,start_time,end_time,title,note,status,source
 - 空行は無視します。不完全な行、不正な日付・時刻、長すぎる行は、その行だけをスキップします。
 - 最大件数は1,024件です。各最大長（UTF-8のバイト数）は、ID 64、時刻 5、タイトル128、備考256、状態32、作成元32です。
 - `id`、日付、開始・終了時刻、タイトル、状態、作成元は必須です。備考だけは空にできます。
+- `id`はファイル内で一意にします。同じIDが複数ある場合は最初の正常な予定だけを保持し、2件目以降を不正行としてスキップします。
+- `start_time < end_time`が必須です。同時刻や終了時刻が開始時刻より前の予定はスキップします。
+- 日をまたぐ予定には対応していません。
 
 ## データファイルの場所
 
-CMakeビルドでは、サンプルの`schedule.csv`を実行ファイルと同じフォルダーへコピーします。アプリは実行ファイルと同じフォルダーの`schedule.csv`を起動時に一度読み込みます。
+`schedule.example.csv`は書式確認用のサンプルです。`schedule.csv`は作業ログアプリや利用者が管理する実データであり、Git管理の対象外です。
+
+CMakeビルドでは、サンプルを`schedule.example.csv`の名前のまま実行ファイルと同じフォルダーへコピーします。実データの`schedule.csv`は作成・更新・上書きしません。サンプルを試す場合だけ、利用者が明示的にコピーしてください。
+
+```powershell
+Copy-Item .\build\Debug\schedule.example.csv .\build\Debug\schedule.csv
+```
+
+アプリは実行ファイルと同じフォルダーの`schedule.csv`を起動時に一度読み込みます。
 
 作業ログアプリと別の共通ファイルを使う場合は、環境変数`SCHEDULE_BY_C_DATA_FILE`に絶対パスを指定できます。
 
@@ -83,6 +94,8 @@ CMakeビルドでは、サンプルの`schedule.csv`を実行ファイルと同�
 $env:SCHEDULE_BY_C_DATA_FILE = 'C:\shared\schedule.csv'
 .\build\ScheduleByC.exe
 ```
+
+予定ファイルのパスはWindowsのUnicode APIで扱うため、日本語・空白・従来のANSIコードページで表現できない文字を含むパスも指定できます。CSV内部の文字コードはパスとは別に、引き続きUTF-8です。環境変数が空、未設定、または長すぎる場合は、実行ファイルと同じフォルダーの`schedule.csv`へ安全にフォールバックします。
 
 ファイルがない場合は「予定データなし」と表示し、通常のカレンダーとして動作します。
 
@@ -117,6 +130,7 @@ cl /TC /W4 /utf-8 /DUNICODE /D_UNICODE `
 - `*`が付いた日: 予定あり
 - 月初前・月末後の空白セルをクリック: 選択日は変更しない
 - ウィンドウを縦に広げる: 下部に表示できる予定件数が増える
+- ウィンドウの縮小: ヘッダー、6行のカレンダー、予定領域が重ならない最小サイズで停止
 
 月を切り替えると選択日も表示月へ移し、存在しない日付は月末日に調整します。たとえば31日を選んだ状態で4月へ移動すると、選択日は4月30日になります。
 
@@ -127,7 +141,7 @@ cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-日付検索（0件・1件・複数件）、開始時刻順、正常CSV、ファイルなし、空ファイル、不正行、ヘッダーのみ、引用符付き値、月初・月末、うるう年、年跨ぎを確認します。
+日付検索（0件・1件・複数件）、開始時刻順、重複ID拒否、開始・終了時刻の前後関係、正常CSV、ファイルなし、空ファイル、不正行、ヘッダーのみ、引用符付き値、長大行、Unicodeファイルパス、月初・月末、うるう年、年跨ぎを確認します。
 
 ## 将来の連携
 

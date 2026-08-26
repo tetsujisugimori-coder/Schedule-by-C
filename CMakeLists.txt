@@ -29,8 +29,8 @@ target_link_libraries(ScheduleByC PRIVATE ScheduleCore user32 gdi32)
 
 add_custom_command(TARGET ScheduleByC POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/schedule.csv"
-        "$<TARGET_FILE_DIR:ScheduleByC>/schedule.csv"
+        "${CMAKE_CURRENT_SOURCE_DIR}/schedule.example.csv"
+        "$<TARGET_FILE_DIR:ScheduleByC>/schedule.example.csv"
 )
 
 if(MSVC)

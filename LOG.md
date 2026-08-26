@@ -52,3 +52,23 @@
 - Built the application and tests with MSYS2 UCRT64 `gcc` using `-Wall -Wextra -Wpedantic -Werror`; all builds and tests passed.
 - Tests cover no schedule, one schedule, multiple schedules, start-time sorting, normal CSV, missing file, empty file, header only, invalid date/time and incomplete rows, quoted fields, oversized rows, leap years, month boundaries, and year-boundary navigation.
 - Performed a GUI smoke test of the built application. Confirmed schedule markers on August 25 and 26, the selected-date display, UTF-8 Japanese titles and notes, and two August 25 schedules rendered in 09:00 then 13:00 order.
+
+## 2026-08-26: PR #5 review fixes
+
+- Separated the tracked sample from runtime data by renaming `schedule.csv` to `schedule.example.csv` and adding the real `schedule.csv` to `.gitignore`.
+- Changed the CMake post-build step to copy only `schedule.example.csv` under its sample name. Builds no longer create, update, or overwrite runtime `schedule.csv` data.
+- Converted validated `HH:MM` values to minutes from midnight and now reject schedules where `start_time >= end_time`. Overnight schedules remain unsupported.
+- Enforced non-empty, unique schedule IDs in `ScheduleCollection_Add`. The first valid occurrence is retained, while later duplicate rows are skipped and counted.
+- Changed schedule file paths to wide strings and replaced ANSI path APIs with `GetEnvironmentVariableW`, `GetModuleFileNameW`, and wide-character file opening. CSV contents remain UTF-8.
+- Added a minimum client size through `WM_GETMINMAXINFO` and separated vertical layout calculation. The minimum size preserves the header, weekday row, six calendar rows, and schedule footer without overlap or footer overflow.
+- Updated `README.md` with the sample/runtime file distinction, non-overwriting build behavior, time-order rule, duplicate-ID behavior, Unicode path support, minimum window size, and current limitations.
+
+## Verification for PR #5 review fixes
+
+- Built the Debug configuration with MSVC `/W4`: 0 warnings and 0 errors.
+- Ran CTest: `CalendarTests`, `ScheduleTests`, and `StorageTests` all passed (3/3).
+- Built the application and all tests with MSYS2 UCRT64 GCC using `-Wall -Wextra -Wpedantic -Werror`; all builds and tests passed.
+- Added tests for equal/reversed times, `00:00` to `00:01`, `23:58` to `23:59`, valid rows after invalid rows, duplicate IDs, same-time schedules with different IDs, and missing/valid paths containing Japanese text, spaces, and an emoji.
+- Compared the SHA-256 hash of an existing `build/Debug/schedule.csv` before and after reconfiguration and rebuild; it remained `0434C0469574458DB796A05B7DE2CBDDA974D2E776F358F297B9A43DFCEFF1FA`. The sample was copied separately as `schedule.example.csv`.
+- Performed a GUI smoke test with a path containing Japanese text, a space, and an emoji. Confirmed schedule markers, Japanese titles and notes, start-time ordering, minimum-size layout, date clicking, expansion and repaint, previous/next month navigation, and normal startup with `schedule.csv` missing.
+- Remaining constraints: no overnight or multiline CSV schedules, no live reload, fixed collection and field limits, no paths exceeding the configured path buffer, and no schedule creation/editing/deletion or external API communication.

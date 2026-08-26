@@ -30,9 +30,17 @@ void ScheduleCollection_Init(ScheduleCollection *collection)
 int ScheduleCollection_Add(ScheduleCollection *collection,
     const Schedule *schedule)
 {
-    if (collection == NULL || schedule == NULL
+    size_t index;
+
+    if (collection == NULL || schedule == NULL || schedule->id[0] == '\0'
         || collection->count >= MAX_SCHEDULES) {
         return 0;
+    }
+
+    for (index = 0; index < collection->count; ++index) {
+        if (strcmp(collection->items[index].id, schedule->id) == 0) {
+            return 0;
+        }
     }
 
     collection->items[collection->count] = *schedule;

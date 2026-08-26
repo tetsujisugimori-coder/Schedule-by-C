@@ -1,6 +1,6 @@
 #include <windows.h>
 #include <windowsx.h>
-#include <string.h>
+#include <wchar.h>
 
 #include "calendar.h"
 #include "schedule.h"
@@ -10,8 +10,12 @@
 #define CALENDAR_COLUMNS 7
 #define CALENDAR_ROWS 6
 #define SCHEDULE_MARKER L"*"
-#define SCHEDULE_FILE_NAME "schedule.csv"
-#define SCHEDULE_PATH_ENV "SCHEDULE_BY_C_DATA_FILE"
+#define SCHEDULE_FILE_NAME L"schedule.csv"
+#define SCHEDULE_PATH_ENV L"SCHEDULE_BY_C_DATA_FILE"
+#define CALENDAR_MARGIN 20
+#define MIN_CALENDAR_ROW_HEIGHT 36
+#define MIN_CLIENT_WIDTH 640
+#define MIN_CLIENT_HEIGHT 560
 
 typedef struct {
     int year;
@@ -49,35 +53,46 @@ static int IsSameDate(CalendarDate left, int year, int month, int day)
     return left.year == year && left.month == month && left.day == day;
 }
 
-static void GetScheduleFilePath(char path[MAX_PATH])
+static void UseRelativeScheduleFilePath(WCHAR path[MAX_PATH])
 {
-    DWORD environmentLength = GetEnvironmentVariableA(SCHEDULE_PATH_ENV,
+    size_t fileNameLength = wcslen(SCHEDULE_FILE_NAME);
+
+    wmemcpy(path, SCHEDULE_FILE_NAME, fileNameLength + 1);
+}
+
+static void GetScheduleFilePath(WCHAR path[MAX_PATH])
+{
+    DWORD environmentLength = GetEnvironmentVariableW(SCHEDULE_PATH_ENV,
         path, MAX_PATH);
     DWORD executableLength;
-    char *separator;
+    WCHAR *separator;
+    size_t directoryLength;
+    size_t fileNameLength;
 
     if (environmentLength > 0 && environmentLength < MAX_PATH) {
         return;
     }
 
-    executableLength = GetModuleFileNameA(NULL, path, MAX_PATH);
+    path[0] = L'\0';
+    executableLength = GetModuleFileNameW(NULL, path, MAX_PATH);
     if (executableLength == 0 || executableLength >= MAX_PATH) {
-        lstrcpynA(path, SCHEDULE_FILE_NAME, MAX_PATH);
+        UseRelativeScheduleFilePath(path);
         return;
     }
 
-    separator = strrchr(path, '\\');
+    separator = wcsrchr(path, L'\\');
     if (separator == NULL) {
-        lstrcpynA(path, SCHEDULE_FILE_NAME, MAX_PATH);
+        UseRelativeScheduleFilePath(path);
         return;
     }
 
-    separator[1] = '\0';
-    if (lstrlenA(path) + lstrlenA(SCHEDULE_FILE_NAME) >= MAX_PATH) {
-        lstrcpynA(path, SCHEDULE_FILE_NAME, MAX_PATH);
+    directoryLength = (size_t)(separator - path) + 1;
+    fileNameLength = wcslen(SCHEDULE_FILE_NAME);
+    if (directoryLength + fileNameLength >= MAX_PATH) {
+        UseRelativeScheduleFilePath(path);
         return;
     }
-    lstrcatA(path, SCHEDULE_FILE_NAME);
+    wmemcpy(path + directoryLength, SCHEDULE_FILE_NAME, fileNameLength + 1);
 }
 
 static void Utf8ToWide(const char *source, WCHAR *destination,
@@ -321,23 +336,50 @@ static void DrawScheduleFooter(HDC hdc, const RECT *footerRect,
     }
 }
 
+static void CalculateVerticalLayout(int clientHeight, int gridTop,
+    int *gridBottom, int *footerTop, int *footerHeight)
+{
+    int desiredFooterHeight = clientHeight / 3;
+    int minimumFooterTop = gridTop
+        + CALENDAR_ROWS * MIN_CALENDAR_ROW_HEIGHT + 8;
+    int availableFooterHeight = clientHeight - CALENDAR_MARGIN
+        - minimumFooterTop;
+
+    if (desiredFooterHeight < 150) {
+        desiredFooterHeight = 150;
+    }
+    if (desiredFooterHeight > 280) {
+        desiredFooterHeight = 280;
+    }
+    if (availableFooterHeight < 0) {
+        availableFooterHeight = 0;
+    }
+    if (desiredFooterHeight > availableFooterHeight) {
+        desiredFooterHeight = availableFooterHeight;
+    }
+
+    *footerHeight = desiredFooterHeight;
+    *footerTop = clientHeight - CALENDAR_MARGIN - desiredFooterHeight;
+    *gridBottom = *footerTop - 8;
+}
+
 static void DrawCalendar(HDC hdc, const RECT *clientRect)
 {
     static const WCHAR *weekdays[CALENDAR_COLUMNS] = {
         L"日", L"月", L"火", L"水", L"木", L"金", L"土"
     };
-    const int margin = 20;
+    const int margin = CALENDAR_MARGIN;
     const int headerTop = 16;
     const int headerHeight = 46;
     const int weekdayTop = 68;
     const int weekdayHeight = 26;
     int clientWidth = clientRect->right - clientRect->left;
     int clientHeight = clientRect->bottom - clientRect->top;
-    int footerHeight = clientHeight / 3;
+    int footerHeight;
     int gridLeft = margin;
     int gridRight = clientWidth - margin;
     int gridTop = weekdayTop + weekdayHeight;
-    int footerTop = clientHeight - margin - footerHeight;
+    int footerTop;
     int gridBottom;
     int columnWidth;
     int rowHeight;
@@ -352,13 +394,8 @@ static void DrawCalendar(HDC hdc, const RECT *clientRect)
     HBRUSH todayBrush = CreateSolidBrush(RGB(255, 242, 204));
     HPEN todayPen = CreatePen(PS_SOLID, 2, RGB(220, 130, 30));
 
-    if (footerHeight < 150) {
-        footerHeight = 150;
-    }
-    if (footerHeight > 280) {
-        footerHeight = 280;
-    }
-    footerTop = clientHeight - margin - footerHeight;
+    CalculateVerticalLayout(clientHeight, gridTop, &gridBottom, &footerTop,
+        &footerHeight);
 
     FillRect(hdc, clientRect, emptyCellBrush);
     SetBkMode(hdc, TRANSPARENT);
@@ -366,10 +403,6 @@ static void DrawCalendar(HDC hdc, const RECT *clientRect)
     if (gridRight <= gridLeft) {
         gridRight = gridLeft + CALENDAR_COLUMNS;
     }
-    if (footerTop <= gridTop + CALENDAR_ROWS + 8) {
-        footerTop = gridTop + CALENDAR_ROWS + 8;
-    }
-    gridBottom = footerTop - 8;
     columnWidth = (gridRight - gridLeft) / CALENDAR_COLUMNS;
     rowHeight = (gridBottom - gridTop) / CALENDAR_ROWS;
     if (columnWidth < 1) {
@@ -442,6 +475,23 @@ static void DrawCalendar(HDC hdc, const RECT *clientRect)
 static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message) {
+    case WM_GETMINMAXINFO:
+        {
+            MINMAXINFO *minMaxInfo = (MINMAXINFO *)lParam;
+            RECT minimumRect = { 0, 0, MIN_CLIENT_WIDTH, MIN_CLIENT_HEIGHT };
+            DWORD style = (DWORD)GetWindowLongPtrW(hwnd, GWL_STYLE);
+            DWORD extendedStyle = (DWORD)GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+
+            if (AdjustWindowRectEx(&minimumRect, style,
+                GetMenu(hwnd) != NULL, extendedStyle)) {
+                minMaxInfo->ptMinTrackSize.x = minimumRect.right
+                    - minimumRect.left;
+                minMaxInfo->ptMinTrackSize.y = minimumRect.bottom
+                    - minimumRect.top;
+            }
+        }
+        return 0;
+
     case WM_PAINT:
         {
             PAINTSTRUCT paint;
@@ -502,7 +552,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previousInstance,
     HWND hwnd;
     MSG message;
     SYSTEMTIME now;
-    char scheduleFilePath[MAX_PATH];
+    WCHAR scheduleFilePath[MAX_PATH];
 
     (void)previousInstance;
     (void)commandLine;

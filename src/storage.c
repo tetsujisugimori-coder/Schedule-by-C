@@ -11,16 +11,16 @@
 #define MAX_CSV_FIELD_LENGTH MAX_NOTE_LENGTH
 #define MAX_CSV_LINE_LENGTH 2048
 
-static FILE *OpenFileForReading(const char *filePath)
+static FILE *OpenFileForReading(const wchar_t *filePath)
 {
     FILE *file = NULL;
 
 #ifdef _MSC_VER
-    if (fopen_s(&file, filePath, "rb") != 0) {
+    if (_wfopen_s(&file, filePath, L"rb") != 0) {
         return NULL;
     }
 #else
-    file = fopen(filePath, "rb");
+    file = _wfopen(filePath, L"rb");
 #endif
     return file;
 }
@@ -161,7 +161,7 @@ static int ParseDate(const char *text, int *year, int *month, int *day)
     return Calendar_IsValidDate(*year, *month, *day);
 }
 
-static int IsValidTime(const char *text)
+static int ParseTimeInMinutes(const char *text, int *minutesFromMidnight)
 {
     int hour;
     int minute;
@@ -170,23 +170,33 @@ static int IsValidTime(const char *text)
         return 0;
     }
 
-    return ParseFixedDigits(text, 0, 2, &hour)
-        && ParseFixedDigits(text, 3, 2, &minute)
-        && hour >= 0 && hour <= 23
-        && minute >= 0 && minute <= 59;
+    if (!ParseFixedDigits(text, 0, 2, &hour)
+        || !ParseFixedDigits(text, 3, 2, &minute)
+        || hour < 0 || hour > 23
+        || minute < 0 || minute > 59) {
+        return 0;
+    }
+
+    *minutesFromMidnight = hour * 60 + minute;
+    return 1;
 }
 
 static int ConvertFieldsToSchedule(
     char fields[CSV_FIELD_COUNT][MAX_CSV_FIELD_LENGTH + 1],
     Schedule *schedule)
 {
+    int startMinutes;
+    int endMinutes;
+
     memset(schedule, 0, sizeof(*schedule));
 
     if (fields[0][0] == '\0' || fields[4][0] == '\0'
         || fields[6][0] == '\0' || fields[7][0] == '\0'
         || !ParseDate(fields[1], &schedule->year, &schedule->month,
             &schedule->day)
-        || !IsValidTime(fields[2]) || !IsValidTime(fields[3])) {
+        || !ParseTimeInMinutes(fields[2], &startMinutes)
+        || !ParseTimeInMinutes(fields[3], &endMinutes)
+        || startMinutes >= endMinutes) {
         return 0;
     }
 
@@ -199,7 +209,7 @@ static int ConvertFieldsToSchedule(
         && CopyField(schedule->source, sizeof(schedule->source), fields[7]);
 }
 
-StorageLoadResult Storage_LoadSchedules(const char *filePath,
+StorageLoadResult Storage_LoadSchedules(const wchar_t *filePath,
     ScheduleCollection *collection)
 {
     StorageLoadResult result = { STORAGE_LOAD_OK, 0, 0 };
