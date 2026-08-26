@@ -82,18 +82,9 @@ id,date,start_time,end_time,title,note,status,source
 
 CMakeビルドでは、サンプルを`schedule.example.csv`の名前のまま実行ファイルと同じフォルダーへコピーします。実データの`schedule.csv`は作成・更新・上書きしません。サンプルを試す場合だけ、利用者が明示的にコピーしてください。
 
-```powershell
-Copy-Item .\build\Debug\schedule.example.csv .\build\Debug\schedule.csv
-```
-
 アプリは実行ファイルと同じフォルダーの`schedule.csv`を起動時に一度読み込みます。
 
-作業ログアプリと別の共通ファイルを使う場合は、環境変数`SCHEDULE_BY_C_DATA_FILE`に絶対パスを指定できます。
-
-```powershell
-$env:SCHEDULE_BY_C_DATA_FILE = 'C:\shared\schedule.csv'
-.\build\ScheduleByC.exe
-```
+作業ログアプリと別の共通ファイルを使う場合は、環境変数`SCHEDULE_BY_C_DATA_FILE`に絶対パスを指定できます。この場合、実行ファイルと同じフォルダーへサンプルCSVを`schedule.csv`としてコピーする必要はありません。ビルド方式別のコピー先と起動コマンドは、次の「ビルドと実行」を参照してください。
 
 予定ファイルのパスはWindowsのUnicode APIで扱うため、日本語・空白・従来のANSIコードページで表現できない文字を含むパスも指定できます。CSV内部の文字コードはパスとは別に、引き続きUTF-8です。環境変数が空、未設定、または長すぎる場合は、実行ファイルと同じフォルダーの`schedule.csv`へ安全にフォールバックします。
 
@@ -103,16 +94,60 @@ $env:SCHEDULE_BY_C_DATA_FILE = 'C:\shared\schedule.csv'
 
 Visual StudioのDeveloper PowerShell、またはMinGWなど、CMakeとCコンパイラが使える環境で実行します。
 
+使用するCMakeジェネレーターによって実行ファイルとCSVの出力先が変わります。MSVC用とMinGW・GCC用のコマンドを同じ手順内で混在させず、使用しているジェネレーターに対応する一連のコマンドを選んでください。
+
+### MSVC・Visual Studio系
+
+MSVC・Visual Studio系のマルチ構成ジェネレーターでは、Debug構成のファイルは次の場所に生成されます。
+
+- 実行ファイル: `.\build\Debug\ScheduleByC.exe`
+- サンプルCSV: `.\build\Debug\schedule.example.csv`
+- 実データCSV: `.\build\Debug\schedule.csv`
+
+ビルド、サンプルのコピー、共有ファイルを指定した起動、CTestは次のコマンドで実行できます。
+
 ```powershell
 cmake -S . -B build
 cmake --build build --config Debug
+Copy-Item .\build\Debug\schedule.example.csv .\build\Debug\schedule.csv
+$env:SCHEDULE_BY_C_DATA_FILE = 'C:\shared\schedule.csv'
+.\build\Debug\ScheduleByC.exe
+ctest --test-dir build -C Debug --output-on-failure
 ```
 
-代表的な出力先は次のいずれかです。
+`SCHEDULE_BY_C_DATA_FILE`で共有ファイルを指定して起動する場合、`Copy-Item`の行は不要です。環境変数を指定せず、同梱サンプルを実データとして試す場合だけコピーしてください。
+
+### MinGW・MSYS2 UCRT64 GCC系
+
+MinGW・MSYS2 UCRT64 GCC系の単一構成ジェネレーターでは、ファイルは次の場所に生成されます。
+
+- 実行ファイル: `.\build\ScheduleByC.exe`
+- サンプルCSV: `.\build\schedule.example.csv`
+- 実データCSV: `.\build\schedule.csv`
+
+ビルド、サンプルのコピー、共有ファイルを指定した起動、CTestは次のコマンドで実行できます。
 
 ```powershell
-.\build\Debug\ScheduleByC.exe
+cmake -S . -B build
+cmake --build build
+Copy-Item .\build\schedule.example.csv .\build\schedule.csv
+$env:SCHEDULE_BY_C_DATA_FILE = 'C:\shared\schedule.csv'
 .\build\ScheduleByC.exe
+ctest --test-dir build --output-on-failure
+```
+
+`SCHEDULE_BY_C_DATA_FILE`で共有ファイルを指定して起動する場合、こちらも`Copy-Item`の行は不要です。
+
+### ジェネレーターごとにビルドディレクトリを分ける
+
+同じ`build`ディレクトリを異なるジェネレーターで使い回すと、以前のCMakeキャッシュと競合することがあります。複数のコンパイラーを併用する場合は、たとえば次のようにビルドディレクトリを分ける方が安全です。この場合、上記コマンド内の`build`もそれぞれ`build-msvc`または`build-gcc`へ読み替えてください。
+
+```powershell
+cmake -S . -B build-msvc
+cmake --build build-msvc --config Debug
+
+cmake -S . -B build-gcc -G "MinGW Makefiles"
+cmake --build build-gcc
 ```
 
 MSVCで直接ビルドする場合:
@@ -136,9 +171,18 @@ cl /TC /W4 /utf-8 /DUNICODE /D_UNICODE `
 
 ## テスト
 
+MSVC・Visual Studio系:
+
 ```powershell
 cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
+```
+
+MinGW・MSYS2 UCRT64 GCC系:
+
+```powershell
+cmake --build build
+ctest --test-dir build --output-on-failure
 ```
 
 日付検索（0件・1件・複数件）、開始時刻順、重複ID拒否、開始・終了時刻の前後関係、正常CSV、ファイルなし、空ファイル、不正行、ヘッダーのみ、引用符付き値、長大行、Unicodeファイルパス、月初・月末、うるう年、年跨ぎを確認します。

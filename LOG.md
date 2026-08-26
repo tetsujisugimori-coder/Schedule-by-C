@@ -72,3 +72,18 @@
 - Compared the SHA-256 hash of an existing `build/Debug/schedule.csv` before and after reconfiguration and rebuild; it remained `0434C0469574458DB796A05B7DE2CBDDA974D2E776F358F297B9A43DFCEFF1FA`. The sample was copied separately as `schedule.example.csv`.
 - Performed a GUI smoke test with a path containing Japanese text, a space, and an emoji. Confirmed schedule markers, Japanese titles and notes, start-time ordering, minimum-size layout, date clicking, expansion and repaint, previous/next month navigation, and normal startup with `schedule.csv` missing.
 - Remaining constraints: no overnight or multiline CSV schedules, no live reload, fixed collection and field limits, no paths exceeding the configured path buffer, and no schedule creation/editing/deletion or external API communication.
+
+## 2026-08-26: Build-specific README examples
+
+- Separated the MSVC/Visual Studio and MinGW/MSYS2 UCRT64 GCC command examples in `README.md` so each build, sample-data copy, application launch, and CTest command forms one consistent workflow.
+- Documented the build-specific sample-copy destinations: `build\Debug\schedule.csv` for MSVC and `build\schedule.csv` for MinGW/GCC.
+- Clarified that copying `schedule.example.csv` is unnecessary when `SCHEDULE_BY_C_DATA_FILE` points to a shared schedule file.
+- Documented that generator choice changes output paths, that commands for different generators should not be mixed, and that separate directories such as `build-msvc` and `build-gcc` are safer when using multiple generators.
+
+## Verification for build-specific README examples
+
+- Ran `cmake --build build --config Debug` with MSVC successfully.
+- Ran `ctest --test-dir build -C Debug --output-on-failure`; `CalendarTests`, `ScheduleTests`, and `StorageTests` all passed (3/3).
+- Confirmed the documented MSVC files exist at `build\Debug\ScheduleByC.exe`, `build\Debug\schedule.example.csv`, and `build\Debug\schedule.csv`.
+- The MSYS2 UCRT64 GCC compiler remained available, so the application and all three test executables were rebuilt directly with `-Wall -Wextra -Wpedantic -Werror`; all three tests passed. GCC CTest was not run because no MinGW Make or Ninja build tool was available for a CMake generator in the current environment.
+- This was a documentation-only change. No C source code or CMake behavior was changed.
