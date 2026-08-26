@@ -176,6 +176,20 @@ static void TestInvalidRowsAreSkipped(void)
     assert(collection.count == 1);
 }
 
+static void TestInvalidHeader(void)
+{
+    ScheduleCollection collection;
+    StorageLoadResult result;
+
+    WriteFile("wrong,header\n"
+        "1,2026-08-25,09:00,10:00,Valid row,note,planned,worklog\n");
+    result = Storage_LoadSchedules(TEST_FILE_PATH, &collection);
+
+    assert(result.status == STORAGE_LOAD_INVALID_FORMAT);
+    assert(result.loadedCount == 0);
+    assert(collection.count == 0);
+}
+
 static void TestQuotedFields(void)
 {
     ScheduleCollection collection;
@@ -225,6 +239,7 @@ int main(void)
     TestUnicodeFilePaths();
     TestEmptyAndHeaderOnly();
     TestInvalidRowsAreSkipped();
+    TestInvalidHeader();
     TestQuotedFields();
     TestLongRowIsSkipped();
     CleanupTestFiles();
